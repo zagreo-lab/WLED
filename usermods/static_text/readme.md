@@ -1,9 +1,13 @@
 # Usermod "Static Text" per WLED 16.x 
 Nota: usa il fontManager interno di WLED
 
-Versione: v.2
+Versione: v.2.1
 
 Author: Zagreo@30.09.2026
+
+Per modificare il numero di versione cambiare in /wled00/wled.h:
+
+#define VERSION 2610240
 
 ## Comandi:
 (stessi font, UTF-8/accenti e font personalizzati .wbf dello Scrolling Text).
