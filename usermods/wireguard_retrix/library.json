@@ -1,0 +1,4 @@
+{
+  "name": "wireguard_retrix",
+  "build": { "libArchive": false, "srcDir": "src" }
+}
