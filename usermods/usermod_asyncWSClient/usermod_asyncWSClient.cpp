@@ -365,7 +365,7 @@ public:
   }
 
   uint16_t getId() override {
-    return USERMOD_ID_RESERVED + 42;
+    return USERMOD_ID_RESERVED + 64;
   }
 };
 
