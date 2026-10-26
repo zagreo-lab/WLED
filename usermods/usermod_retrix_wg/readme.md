@@ -23,7 +23,7 @@ In `platformio_override.ini`, nell'ambiente usato:
 
 ```
 custom_usermods =
-  wireguard_retrix
+  usermod_retrix_wg
 ```
 
 ## Configurazione

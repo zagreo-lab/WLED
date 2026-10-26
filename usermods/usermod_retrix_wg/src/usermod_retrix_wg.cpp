@@ -1,4 +1,4 @@
-// wireguard_retrix.cpp
+// usermod_retrix_wg.cpp
 //
 // Client WireGuard per collegare la matrice a Retrix attraverso una VPN.
 // Deriva dall'usermod "wireguard" di WLED (Aiden Vigue) con queste differenze:
@@ -29,7 +29,7 @@ const char kFallbackNtp[] = "pool.ntp.org";
 
 }  // namespace
 
-class WireguardRetrixUsermod : public Usermod {
+class UsermodRetrixWG : public Usermod {
   private:
     WireGuard wg;
 
@@ -215,5 +215,5 @@ class WireguardRetrixUsermod : public Usermod {
     uint16_t getId() override { return USERMOD_ID_WIREGUARD; }
 };
 
-static WireguardRetrixUsermod wireguardRetrix;
-REGISTER_USERMOD(wireguardRetrix);
+static UsermodRetrixWG usermodRetrixWG;
+REGISTER_USERMOD(usermodRetrixWG);

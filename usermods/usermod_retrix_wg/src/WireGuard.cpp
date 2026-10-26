@@ -2,7 +2,7 @@
  * WireGuard implementation for ESP32 Arduino by Kenta Ida (fuga@fugafuga.org)
  * SPDX-License-Identifier: BSD-3-Clause
  *
- * Modifiche per Retrix (usermod wireguard_retrix):
+ * Modifiche per Retrix (usermod usermod_retrix_wg):
  * - rete instradata nel tunnel configurabile (split tunnel) invece di 0.0.0.0/0;
  * - il tunnel diventa l'interfaccia di default solo se richiesto;
  * - le chiamate lwIP (netif, peer, timer) girano nel thread tcpip tramite tcpip_api_call;
