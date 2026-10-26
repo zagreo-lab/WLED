@@ -1,62 +1,58 @@
 // usermod_retrix_client.cpp
 
-#pragma once
+//#pragma once
 #include "wled.h"
-#include <WebSocketsClient.h>
+//#include <ArduinoWebsockets.h>
+#include <WiFiClient.h>
+#include "NuSock.h"
 
 
 
 class WledRetrixClientUsermod : public Usermod {
   private:
-    WebSocketsClient webSocket;
+    WiFiClient tcpClient;          // trasporto TCP sottostante
+    NuSockClient wsClient;         // wrapper WebSocket di NuSock
     bool isConnected = false;
     unsigned long lastReconnectAttempt = 0;
 
-    
+    // Configurazione (modificabile da UI WLED)
     bool wssEnabled = false;
     String wssServer = "alexa.amfid.ch";
     int wssPort = 80;
     String wssPath = "/wled-ws";
 
-    void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
-      switch(type) {
-        case WStype_DISCONNECTED:
-          Serial.println("[Retrix] WebSocket disconnesso");
-          isConnected = false;
-          break;
-        case WStype_CONNECTED:
-          Serial.printf("[Retrix] WebSocket connesso a %s:%d%s\n",wssServer.c_str(), wssPort, wssPath.c_str());
+    void onWsEvent(NuClient* client, NuClientEvent event,
+                   const uint8_t* payload, size_t length) {
+      switch (event) {
+        case CLIENT_EVENT_CONNECTED:
+          Serial.println("[Retrix] WebSocket connesso");
           isConnected = true;
           {
-            // Messaggio di presentazione al server
             String initMsg = "{\"event\":\"boot\",\"mac\":\"" + WiFi.macAddress() + "\"}";
-            webSocket.sendTXT(initMsg);
+            wsClient.send(initMsg.c_str());
             Serial.printf("[Retrix] Inviato: %s\n", initMsg.c_str());
           }
           break;
-        case WStype_TEXT:
-          Serial.printf("[Retrix] Ricevuto (%u byte): %.*s\n", (unsigned)length, (int)length, (const char*)payload);
-          //if (length > 0) {
-          //  deserializeState(payload, CALL_MODE_WS_SEND);
-          //}
+
+        case CLIENT_EVENT_DISCONNECTED:
+          Serial.println("[Retrix] WebSocket disconnesso");
+          isConnected = false;
           break;
 
-        case WStype_ERROR:
+        case CLIENT_EVENT_TEXT:
+          Serial.printf("[Retrix] Ricevuto: %.*s\n", (int)length, (const char*)payload);
+          // Per ora solo log; in futuro: deserializeState(...)
+          break;
+
+        case CLIENT_EVENT_ERROR:
           Serial.println("[Retrix] Errore WebSocket");
-          break;
-
-        case WStype_PING:
-          Serial.println("[Retrix] Ping ricevuto");
-          break;
-
-        case WStype_PONG:
-          Serial.println("[Retrix] Pong ricevuto");
           break;
 
         default:
           break;
       }
     }
+    
 
   public:
     void setup() override {
@@ -72,8 +68,11 @@ class WledRetrixClientUsermod : public Usermod {
         return;
       }
 
-      Serial.printf("[Retrix] Connessione a ws://%s:%d%s\n", wssServer.c_str(), wssPort, wssPath.c_str());
+      // Registra i callback
+      wsClient.onEvent(onWsEvent);
 
+      Serial.printf("[Retrix] Connessione a ws://%s:%d%s\n", wssServer.c_str(), wssPort, wssPath.c_str());
+      /*
       // Connessione in chiaro (ws://) per il test iniziale
       webSocket.begin(wssServer.c_str(), wssPort, wssPath.c_str());
 
@@ -85,12 +84,18 @@ class WledRetrixClientUsermod : public Usermod {
 
       // Opzionale: heartbeat per capire se il canale è vivo
       webSocket.enableHeartbeat(15000, 3000, 2);
+      */
+
+      // Avvia la connessione utilizzando il client TCP
+      wsClient.begin(tcpClient, wssServer.c_str(), wssPort, wssPath.c_str());
 
     }
 
     void loop() override {
       if (!wssEnabled) return;
-      webSocket.loop();
+      //webSocket.loop();
+      / NuSock richiede il polling nel loop
+      wsClient.loop();
     }
 
     void addToConfig(JsonObject& root) override {

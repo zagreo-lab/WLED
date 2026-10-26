@@ -2,5 +2,8 @@
   "name": "usermod_retrix_client",
   "version": "1.0.0",
   "description": "Client WebSocket per invio dati a server Retrix in Cloud",
-  "build": { "libArchive": false }
+  "build": { "libArchive": false },
+  "dependencies": {
+    "mobizt/NuSock": "^1.0.2"
+  }
 }

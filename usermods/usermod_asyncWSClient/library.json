@@ -1,0 +1,6 @@
+{
+  "name": "usermod_asyncWSClient",
+  "version": "1.0.0",
+  "description": "Client WebSocket per invio dati a server Retrix in Cloud",
+  "build": { "libArchive": false }
+}
