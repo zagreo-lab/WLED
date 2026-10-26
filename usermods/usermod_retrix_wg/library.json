@@ -1,0 +1,4 @@
+{
+  "name": "usermod_retrix_wg",
+  "build": { "libArchive": false, "srcDir": "src" }
+}
