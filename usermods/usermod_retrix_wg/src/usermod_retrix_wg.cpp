@@ -9,6 +9,7 @@
 // - ora di sistema in UTC via SNTP (serve solo al timestamp dell'handshake), senza fuso POSIX;
 // - se l'handshake non riesce per troppo tempo il tunnel viene ricreato (rilegge il DNS dell'host);
 // - begin() non blocca il loop con i tentativi DNS: i nuovi tentativi sono distanziati.
+// - Funziona anche con l’NTP di WLED disattivato.
 //
 // Non compilare insieme all'usermod "wireguard": includono la stessa libreria.
 
@@ -50,6 +51,8 @@ class UsermodRetrixWG : public Usermod {
     unsigned long lastCheck     = 0;
     unsigned long nextAttempt   = 0;
     unsigned long lastLinkUp    = 0;   // ultima volta che il link risultava attivo
+    bool          wasUp         = false; // stato del link al controllo precedente
+    time_t        upSince       = 0;     // ora (UTC, epoch) in cui il link è salito
 
     bool configValid() const {
       return enabled && endpointHost[0] && endpointPort > 0 && endpointPort <= 65535 &&
@@ -66,6 +69,8 @@ class UsermodRetrixWG : public Usermod {
     }
 
     void stopTunnel() {
+      wasUp   = false;
+      upSince = 0;
       if (wg.is_initialized()) {
         wg.end();
         DEBUG_PRINTLN(F("[WireGuard] tunnel chiuso"));
@@ -103,6 +108,7 @@ class UsermodRetrixWG : public Usermod {
       nextAttempt = millis();
     }
 
+
     void loop() override {
       const unsigned long now = millis();
       if (now - lastCheck < kCheckInterval) return;
@@ -128,14 +134,27 @@ class UsermodRetrixWG : public Usermod {
         return;
       }
 
-      if (wg.is_link_up()) {
+      const bool up = wg.is_link_up();
+      if (up) {
+        if (!wasUp) upSince = time(nullptr);   // il link è appena salito
         lastLinkUp = now;
-      } else if (now - lastLinkUp > kHandshakeWindow) {
-        // Nessun handshake da troppo tempo: forse è cambiato l'IP del server (DNS dinamico).
-        DEBUG_PRINTLN(F("[WireGuard] nessun handshake, ricreo il tunnel"));
-        stopTunnel();
-        nextAttempt = now;
+      } else {
+        upSince = 0;
+        if (now - lastLinkUp > kHandshakeWindow) {
+          // Nessun handshake da troppo tempo: forse è cambiato l'IP del server (DNS dinamico).
+          DEBUG_PRINTLN(F("[WireGuard] nessun handshake, ricreo il tunnel"));
+          stopTunnel();               // azzera anche wasUp e upSince
+          nextAttempt = now;
+          return;
+        }
       }
+      wasUp = up;
+    }
+    
+
+    // Stato colorato nella pagina Info (il valore viene inserito come HTML)
+    static String colored(const char* color, const String& text) {
+      return String(F("<span style=\"color:")) + color + F("\">") + text + F("</span>");
     }
 
     void addToJsonInfo(JsonObject& root) override {
@@ -143,23 +162,30 @@ class UsermodRetrixWG : public Usermod {
       if (user.isNull()) user = root.createNestedObject("u");
       JsonArray infoArr = user.createNestedArray(FPSTR(kName));
 
-      if (!enabled)               infoArr.add(F("disabilitato"));
-      else if (!configValid())    infoArr.add(F("configurazione incompleta"));
-      else if (!timeValid())      infoArr.add(F("in attesa dell'ora (NTP)"));
-      else if (wg.is_link_up())   infoArr.add(String(F("connesso ")) + localIp.toString());
-      else if (wg.is_initialized()) infoArr.add(F("in attesa dell'handshake"));
-      else                        infoArr.add(F("non connesso"));
+      if (!enabled)                 infoArr.add(colored("#f44", F("disabled")));
+      else if (!configValid())      infoArr.add(colored("#f44", F("wrong configuration")));
+      else if (!timeValid())        infoArr.add(colored("#fa0", F("waiting time (NTP)")));
+      else if (wg.is_link_up())     infoArr.add(colored("#4c4", String(F("connected ")) + localIp.toString()));
+      else if (wg.is_initialized()) infoArr.add(colored("#fa0", F("waiting handshake")));
+      else                          infoArr.add(colored("#f44", F("not connected")));
+
+      // Stato leggibile dalle macchine (Retrix): non compare nella pagina Info
+      JsonObject wgState = root.createNestedObject(F("wg"));
+      wgState[F("enabled")] = enabled;
+      wgState[F("up")]      = wg.is_link_up();
+      wgState[F("ip")]      = localIp.toString();
+      wgState[F("since")]   = (uint32_t)upSince;   // epoch UTC; 0 se non connesso
     }
 
     void appendConfigData(Print& s) override {
       s.print(F("addInfo('WireGuard:host',1,'Server (host o IP)');"));
-      s.print(F("addInfo('WireGuard:port',1,'Porta UDP del server');"));
-      s.print(F("addInfo('WireGuard:ip',1,'IP della matrice nella VPN');"));
-      s.print(F("addInfo('WireGuard:mask',1,'Maschera della rete VPN');"));
-      s.print(F("addInfo('WireGuard:pem',1,'Chiave privata della matrice');"));
-      s.print(F("addInfo('WireGuard:pub',1,'Chiave pubblica del server');"));
-      s.print(F("addInfo('WireGuard:psk',1,'Pre-shared key (opzionale)');"));
-      s.print(F("addInfo('WireGuard:full_tunnel',1,'Tutto il traffico nel tunnel');"));
+      s.print(F("addInfo('WireGuard:port',1,'Server UDP port');"));
+      s.print(F("addInfo('WireGuard:ip',1,'IP within the VPN');"));
+      s.print(F("addInfo('WireGuard:mask',1,'VPN network mask');"));
+      s.print(F("addInfo('WireGuard:pem',1,'Device private key');"));
+      s.print(F("addInfo('WireGuard:pub',1,'Server public key');"));
+      s.print(F("addInfo('WireGuard:psk',1,'Pre-shared key');"));
+      s.print(F("addInfo('WireGuard:full_tunnel',1,'All traffic in the VPN');"));
     }
 
     void addToConfig(JsonObject& root) override {

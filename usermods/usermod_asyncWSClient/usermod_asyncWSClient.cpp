@@ -27,6 +27,8 @@
 #define RETRIX_WS_STATUS_INTERVAL 5000UL
 #endif
 
+#define USERMOD_ID_RETRIX_WS_CLIENT 200   
+
 namespace {
 
 constexpr unsigned long kConnectTimeout   = 10000UL;   // TCP + DNS
@@ -365,7 +367,7 @@ public:
   }
 
   uint16_t getId() override {
-    return USERMOD_ID_RESERVED + 64;
+    return USERMOD_ID_RETRIX_WS_CLIENT;
   }
 };
 

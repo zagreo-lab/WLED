@@ -1,6 +1,8 @@
 #include "wled.h"
 #include "fontmanager.h"   // definizione completa di FontManager (FX.h ne ha solo la forward declaration)
 
+#define USERMOD_ID_RETRIX_STATICTEXT 201   
+
 /*
  * Zagreo@30.09.2026 v.2
  *
@@ -93,6 +95,10 @@ class StaticTextUsermod : public Usermod {
       strip.addEffect(255, &mode_staticText, _data_FX_MODE_STATIC_TEXT);
     }
     void loop() override {}
+};
+
+uint16_t getId() {
+    return USERMOD_ID_RETRIX_STATICTEXT;
 };
 
 static StaticTextUsermod static_text_usermod;
