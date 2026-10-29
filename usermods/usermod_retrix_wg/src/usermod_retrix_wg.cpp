@@ -10,6 +10,8 @@
 // - se l'handshake non riesce per troppo tempo il tunnel viene ricreato (rilegge il DNS dell'host);
 // - begin() non blocca il loop con i tentativi DNS: i nuovi tentativi sono distanziati.
 // - Funziona anche con l’NTP di WLED disattivato.
+// - quando il tunnel sale si annuncia a Retrix (POST /api/devices/announce sul server VPN),
+//   così Retrix la registra subito invece di aspettare la propria discovery.
 //
 // Non compilare insieme all'usermod "wireguard": includono la stessa libreria.
 
@@ -17,6 +19,7 @@
 #include "WireGuard-ESP32.h"
 
 #include <time.h>
+#include <HTTPClient.h>
 
 namespace {
 
@@ -24,6 +27,9 @@ constexpr unsigned long kCheckInterval   = 5000UL;    // controllo dello stato
 constexpr unsigned long kRetryInterval   = 30000UL;   // dopo un begin() fallito
 constexpr unsigned long kHandshakeWindow = 180000UL;  // senza handshake per tanto: ricrea il tunnel
 constexpr time_t        kValidEpoch      = 1700000000; // ora considerata sincronizzata (nov 2023)
+constexpr unsigned long kAnnounceRetry   = 30000UL;   // primo nuovo tentativo; poi raddoppia
+constexpr uint8_t       kAnnounceMax     = 4;         // tentativi totali per ogni salita del link
+constexpr uint16_t      kAnnounceTimeout = 3000;      // ms, connessione e risposta dell'annuncio
 
 const char kName[]      = "WireGuard";
 const char kFallbackNtp[] = "pool.ntp.org";
@@ -44,6 +50,8 @@ class UsermodRetrixWG : public Usermod {
     char      privateKey[45]   = "";
     char      publicKey[45]    = "";
     char      presharedKey[45] = "";
+    bool      announce      = true;   // annuncio a Retrix quando il tunnel sale
+    int       announcePort  = 3004;   // porta di Retrix sul server VPN
 
     // Stato
     bool          timeStarted   = false;
@@ -53,6 +61,15 @@ class UsermodRetrixWG : public Usermod {
     unsigned long lastLinkUp    = 0;   // ultima volta che il link risultava attivo
     bool          wasUp         = false; // stato del link al controllo precedente
     time_t        upSince       = 0;     // ora (UTC, epoch) in cui il link è salito
+
+    // Annuncio a Retrix
+    bool          announcePending  = false;  // annuncio da inviare (link appena salito)
+    uint8_t       announceAttempts = 0;      // tentativi fatti dall'ultima salita del link
+    unsigned long nextAnnounce     = 0;
+    volatile bool announceBusy     = false;  // richiesta in corso nel task
+    volatile int  announceResult   = 0;      // esito dal task: 0 nessuno, <0 errore di rete
+    int           lastAnnounceCode = 0;      // ultimo esito, per /json/info
+    char          announceUrl[64]  = "";
 
     bool configValid() const {
       return enabled && endpointHost[0] && endpointPort > 0 && endpointPort <= 65535 &&
@@ -71,6 +88,7 @@ class UsermodRetrixWG : public Usermod {
     void stopTunnel() {
       wasUp   = false;
       upSince = 0;
+      announcePending = false;
       if (wg.is_initialized()) {
         wg.end();
         DEBUG_PRINTLN(F("[WireGuard] tunnel chiuso"));
@@ -92,6 +110,66 @@ class UsermodRetrixWG : public Usermod {
       } else {
         DEBUG_PRINTLN(F("[WireGuard] avvio fallito (DNS o chiave non valida)"));
         nextAttempt = now + kRetryInterval;
+      }
+    }
+
+    // Retrix gira sul server WireGuard: il primo indirizzo della rete VPN (es. 10.8.0.1)
+    IPAddress serverVpnIp() const {
+      return IPAddress(localIp[0] & vpnMask[0], localIp[1] & vpnMask[1],
+                       localIp[2] & vpnMask[2], (localIp[3] & vpnMask[3]) + 1);
+    }
+
+    void startAnnounce(unsigned long now) {
+      snprintf(announceUrl, sizeof(announceUrl), "http://%s:%d/api/devices/announce",
+               serverVpnIp().toString().c_str(), announcePort);
+      announceResult = 0;
+      announceBusy = true;
+      // Task separato: la richiesta può durare secondi e non deve fermare il loop di WLED
+      if (xTaskCreate(announceTask, "wg_announce", 4096, this, 1, nullptr) != pdPASS) {
+        announceBusy = false;
+        nextAnnounce = now + kAnnounceRetry;
+      }
+    }
+
+    static void announceTask(void* arg) {
+      UsermodRetrixWG* self = static_cast<UsermodRetrixWG*>(arg);
+      int code = -1;
+      {
+        HTTPClient http;
+        http.setConnectTimeout(kAnnounceTimeout);
+        http.setTimeout(kAnnounceTimeout);
+        if (http.begin(self->announceUrl)) {
+          http.addHeader("Content-Type", "application/json");
+          code = http.POST("{}");   // Retrix usa l'IP sorgente, il contenuto non serve
+          http.end();
+        }
+      } // HTTPClient distrutto prima di chiudere il task
+      self->announceResult = code;
+      self->announceBusy = false;
+      vTaskDelete(nullptr);
+    }
+
+    void handleAnnounceResult(unsigned long now) {
+      if (announceBusy || announceResult == 0) return;
+      lastAnnounceCode = announceResult;
+      announceResult = 0;
+      DEBUG_PRINTF("[WireGuard] annuncio a Retrix: %d\n", lastAnnounceCode);
+
+      // 200 registrata; 403/404 Retrix non accetta annunci da qui: inutile ripetere.
+      // Altro (Retrix non ancora avviato, 502, errore di rete): nuovo tentativo.
+      if (lastAnnounceCode == 200 || lastAnnounceCode == 403 || lastAnnounceCode == 404) {
+        announcePending = false;
+        return;
+      }
+
+      // Retrix non ancora avviato, 502, errore di rete: nuovo tentativo con intervallo
+      // crescente (30 s, 60 s, 120 s). Dopo kAnnounceMax si smette: la matrice verrà
+      // comunque trovata dalla discovery periodica di Retrix.
+      if (++announceAttempts >= kAnnounceMax) {
+        announcePending = false;
+        DEBUG_PRINTLN(F("[WireGuard] annuncio a Retrix non riuscito, rinuncio"));
+      } else {
+        nextAnnounce = now + (kAnnounceRetry << (announceAttempts - 1));
       }
     }
 
@@ -136,14 +214,24 @@ class UsermodRetrixWG : public Usermod {
 
       const bool up = wg.is_link_up();
       if (up) {
-        if (!wasUp) upSince = time(nullptr);   // il link è appena salito
+        if (!wasUp) {
+          upSince = time(nullptr);     // il link è appena salito
+          announcePending = announce;  // ...e Retrix va avvisato
+          announceAttempts = 0;
+          nextAnnounce = now;
+        }
         lastLinkUp = now;
+
+        handleAnnounceResult(now);
+        if (announcePending && !announceBusy && (long)(now - nextAnnounce) >= 0) {
+          startAnnounce(now);
+        }
       } else {
         upSince = 0;
         if (now - lastLinkUp > kHandshakeWindow) {
           // Nessun handshake da troppo tempo: forse è cambiato l'IP del server (DNS dinamico).
           DEBUG_PRINTLN(F("[WireGuard] nessun handshake, ricreo il tunnel"));
-          stopTunnel();               // azzera anche wasUp e upSince
+          stopTunnel();               // azzera anche wasUp, upSince e announcePending
           nextAttempt = now;
           return;
         }
@@ -175,6 +263,7 @@ class UsermodRetrixWG : public Usermod {
       wgState[F("up")]      = wg.is_link_up();
       wgState[F("ip")]      = localIp.toString();
       wgState[F("since")]   = (uint32_t)upSince;   // epoch UTC; 0 se non connesso
+      wgState[F("announce")] = lastAnnounceCode;   // 0 nessuno, 200 ok, <0 errore di rete
     }
 
     void appendConfigData(Print& s) override {
@@ -186,6 +275,8 @@ class UsermodRetrixWG : public Usermod {
       s.print(F("addInfo('WireGuard:pub',1,'Server public key');"));
       s.print(F("addInfo('WireGuard:psk',1,'Pre-shared key');"));
       s.print(F("addInfo('WireGuard:full_tunnel',1,'All traffic in the VPN');"));
+      s.print(F("addInfo('WireGuard:announce',1,'Announce to Retrix');"));
+      s.print(F("addInfo('WireGuard:announce_port',1,'Retrix port');"));
     }
 
     void addToConfig(JsonObject& root) override {
@@ -199,6 +290,8 @@ class UsermodRetrixWG : public Usermod {
       top["pub"]         = publicKey;
       top["psk"]         = presharedKey;
       top["full_tunnel"] = fullTunnel;
+      top["announce"]      = announce;
+      top["announce_port"] = announcePort;
     }
 
     bool readFromConfig(JsonObject& root) override {
@@ -224,6 +317,10 @@ class UsermodRetrixWG : public Usermod {
       copyString(privateKey,   sizeof(privateKey),   top["pem"]  | "");
       copyString(publicKey,    sizeof(publicKey),    top["pub"]  | "");
       copyString(presharedKey, sizeof(presharedKey), top["psk"]  | "");
+
+      // Annuncio: non richiede di ricreare il tunnel (non entra in "changed")
+      announce     = top["announce"] | announce;
+      announcePort = top["announce_port"] | announcePort;
 
       IPAddress parsed;
       localIp = parsed.fromString((const char*)(top["ip"] | "")) ? parsed : IPAddress(0, 0, 0, 0);
